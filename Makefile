@@ -29,7 +29,7 @@ endif
 
 # Target files
 TARGETS = example simple_example multi_language_example
-OBJS = stb_font_cache.o example.o simple_example.o multi_language_example.o
+OBJS = stb_font_cache.o sdl_render.o example.o simple_example.o multi_language_example.o
 
 # Default target
 all: $(TARGETS)
@@ -43,7 +43,7 @@ example.o: example.c stb_font_cache.h
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -c $< -o $@
 
 # Link example
-example: example.o stb_font_cache.o
+example: example.o stb_font_cache.o sdl_render.o
 	$(CC) $(CFLAGS) $^ -o $@ $(SDL_LIBS) -lm
 
 # Compile simple_example
@@ -51,15 +51,15 @@ simple_example.o: simple_example.c stb_font_cache.h
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -c $< -o $@
 
 # Link simple_example
-simple_example: simple_example.o stb_font_cache.o
+simple_example: simple_example.o stb_font_cache.o sdl_render.o
 	$(CC) $(CFLAGS) $^ -o $@ $(SDL_LIBS) -lm
 
 # Compile multi_language_example
-multi_language_example.o: multi_language_example.c stb_font_cache.h
+multi_language_example.o: multi_language_example.c stb_font_cache.h 
 	$(CC) $(CFLAGS) $(SDL_CFLAGS) -c $< -o $@
 
 # Link multi_language_example
-multi_language_example: multi_language_example.o stb_font_cache.o
+multi_language_example: multi_language_example.o stb_font_cache.o sdl_render.o
 	$(CC) $(CFLAGS) $^ -o $@ $(SDL_LIBS) -lm
 
 # Clean

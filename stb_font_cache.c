@@ -63,28 +63,29 @@ typedef struct font_entry {
     struct font_entry* format_variants[MAX_FORMAT_VARIANTS];
 } font_entry_t;
 
+
+typedef struct glyph_cache_entry {
+    uint64_t key;
+    stb_glyph_t glyph;
+    unsigned char* bitmap;
+    struct glyph_cache_entry* next;
+} glyph_cache_entry_t;
+
+/* Hash table for glyphs */
+#define GLYPH_CACHE_SIZE 1024
 /* Internal cache structure */
 typedef struct {
     font_entry_t* fonts;
     int num_fonts;
     int capacity;
+    glyph_cache_entry_t* glyph_cache[GLYPH_CACHE_SIZE];
 } cache_internal_t;
-
-/* Hash table for glyphs */
-#define GLYPH_CACHE_SIZE 1024
-typedef struct glyph_cache_entry {
-    uint64_t key;
-    stb_glyph_t glyph;
-    unsigned char* bitmap;
-    int has_texture;
-    struct glyph_cache_entry* next;
-} glyph_cache_entry_t;
 
 /*=============================================================================
  * Core Functions
  *===========================================================================*/
 
-stb_font_cache_t* stb_font_cache_create(void) {
+stb_font_cache_t* stb_font_cache_create(const texture_renderer_ops_t* ops, void* context) {
     stb_font_cache_t* cache = (stb_font_cache_t*)calloc(1, sizeof(stb_font_cache_t));
     if (!cache) return NULL;
     
@@ -103,6 +104,8 @@ stb_font_cache_t* stb_font_cache_create(void) {
     cache->tab_width_in_spaces = 8;
     cache->tab_width = 1;
     cache->internal = internal;
+    cache->ops = ops;
+    cache->ops_ctx = context;
     
     return cache;
 }
@@ -111,7 +114,6 @@ void stb_font_cache_destroy(stb_font_cache_t* cache) {
     if (!cache) return;
     
     cache_internal_t* internal = (cache_internal_t*)cache->internal;
-    
     /* Free all fonts */
     font_entry_t* font = internal->fonts;
     while (font) {
@@ -408,16 +410,6 @@ void stb_font_get_formatted_text_size(stb_font_cache_t* cache,
  * Generic Texture-Based Renderer Functions
  *===========================================================================*/
 
-#ifdef STB_FONT_TEXTURE_RENDERER_ENABLED
-
-/* Generic cache data - works with any texture-based renderer */
-typedef struct {
-    texture_renderer_t* renderer;
-    glyph_cache_entry_t* glyph_cache[GLYPH_CACHE_SIZE];
-    int is_rendering_to_texture;
-    int renderer_flags;  /* Flags indicating renderer capabilities */
-} generic_cache_data_t;
-
 /* Key generation */
 static uint64_t glyph_key(uint32_t codepoint, uint8_t format, uint16_t font_idx) {
     return ((uint64_t)codepoint) | ((uint64_t)format << 32) | ((uint64_t)font_idx << 40);
@@ -428,10 +420,12 @@ static uint32_t glyph_cache_hash(uint64_t key) {
 }
 
 /* Helper function to convert RGBA data to platform surface */
-static void* convert_rgba_to_surface(texture_renderer_t* renderer, 
+static void* convert_rgba_to_surface(stb_font_cache_t* cache, 
                                     unsigned char* rgba, int width, int height, int pitch) {
-    if (renderer->ops.create_surface_from_rgba) {
-        return renderer->ops.create_surface_from_rgba(renderer, rgba, width, height, pitch);
+    if (!cache->ops_ctx) return NULL;
+    
+    if (cache->ops->create_surface_from_rgba) {
+        return cache->ops->create_surface_from_rgba(cache->ops_ctx, rgba, width, height, pitch);
     }
     
     /* Fallback: create minimal surface representation */
@@ -440,9 +434,12 @@ static void* convert_rgba_to_surface(texture_renderer_t* renderer,
 }
 
 /* Helper function to destroy surface appropriately */
-static void destroy_surface(texture_renderer_t* renderer, void* surface) {
-    if (renderer->ops.free_surface) {
-        renderer->ops.free_surface(renderer, surface);
+static void destroy_surface(stb_font_cache_t* cache, void* surface) {
+    if (!cache->ops_ctx) return;
+    
+    texture_renderer_ops_t* ops = (texture_renderer_ops_t*)cache->ops;
+    if (ops->free_surface) {
+        ops->free_surface(cache->ops_ctx, surface);
     }
     /* If free_surface is not provided, we assume the surface is managed by create_texture_from_surface */
 }
@@ -452,11 +449,10 @@ static stb_glyph_t* get_or_create_glyph(stb_font_cache_t* cache,
                                        uint8_t format, 
                                        font_entry_t** out_font) {
     cache_internal_t* internal = (cache_internal_t*)cache->internal;
-    generic_cache_data_t* gen_data = (generic_cache_data_t*)cache->user_data;
     
-    if (!gen_data || !gen_data->renderer) return NULL;
+    if (!cache->ops_ctx) return NULL;
     
-    texture_renderer_t* renderer = gen_data->renderer;
+    texture_renderer_ops_t* ops = (texture_renderer_ops_t*)cache->ops;
     
     /* Find font */
     int glyph_idx = 0;
@@ -468,7 +464,7 @@ static stb_glyph_t* get_or_create_glyph(stb_font_cache_t* cache,
     /* Check cache */
     uint64_t key = glyph_key(codepoint, format, 0);
     uint32_t hash = glyph_cache_hash(key);
-    glyph_cache_entry_t* entry = gen_data->glyph_cache[hash];
+    glyph_cache_entry_t* entry = internal->glyph_cache[hash];
     
     while (entry) {
         if (entry->key == key) {
@@ -518,51 +514,39 @@ static stb_glyph_t* get_or_create_glyph(stb_font_cache_t* cache,
         free(bitmap);
         
         /* Create texture through renderer interface */
-        void* surface = convert_rgba_to_surface(renderer, rgba, w, h, w * 4);
+        void* surface = convert_rgba_to_surface(cache, rgba, w, h, w * 4);
         void* texture = NULL;
         
         if (surface) {
-            texture = renderer->ops.create_texture_from_surface(renderer, surface);
+            if (ops->create_texture_from_surface) {
+                texture = ops->create_texture_from_surface(cache->ops_ctx, surface);
+            }
             
             if (texture) {
                 /* Set blend mode if available */
-                if (renderer->ops.set_texture_blend_mode) {
-                    renderer->ops.set_texture_blend_mode(renderer, texture, 1); /* BLEND */
+                if (ops->set_texture_blend_mode) {
+                    ops->set_texture_blend_mode(cache->ops_ctx, texture, 1); /* BLEND */
                 }
                 
                 entry->glyph.texture = texture;
-            } else if (renderer->ops.get_error) {
+            } else if (ops->get_error) {
                 char error_buf[256];
-                renderer->ops.get_error(renderer, error_buf, sizeof(error_buf));
+                ops->get_error(cache->ops_ctx, error_buf, sizeof(error_buf));
                 fprintf(stderr, "Failed to create texture for glyph %c (codepoint %u): %s\n",
                         (char)codepoint, codepoint, error_buf);
             }
             
-            destroy_surface(renderer, surface);
+            destroy_surface(cache, surface);
         }
         
         free(rgba);
     }
     
     /* Add to cache */
-    entry->next = gen_data->glyph_cache[hash];
-    gen_data->glyph_cache[hash] = entry;
+    entry->next = internal->glyph_cache[hash];
+    internal->glyph_cache[hash] = entry;
     
     return &entry->glyph;
-}
-
-/* Bind a generic texture renderer */
-void stb_font_bind_texture_renderer(stb_font_cache_t* cache, texture_renderer_t* renderer) {
-    if (!cache) return;
-    
-    if (!cache->user_data) {
-        generic_cache_data_t* gen_data = (generic_cache_data_t*)calloc(1, sizeof(generic_cache_data_t));
-        cache->user_data = gen_data;
-    }
-    
-    generic_cache_data_t* gen_data = (generic_cache_data_t*)cache->user_data;
-    gen_data->renderer = renderer;
-    gen_data->is_rendering_to_texture = 0;
 }
 
 static int draw_text_worker(stb_font_cache_t* cache, 
@@ -574,11 +558,8 @@ static int draw_text_worker(stb_font_cache_t* cache,
     if (!cache || !text) return x;
     
     cache_internal_t* internal = (cache_internal_t*)cache->internal;
-    generic_cache_data_t* gen_data = (generic_cache_data_t*)cache->user_data;
     
-    if (is_drawing && (!gen_data || !gen_data->renderer)) return x;
-    
-    texture_renderer_t* renderer = gen_data ? gen_data->renderer : NULL;
+    void* ops_ctx = cache->ops_ctx;
     
     int len = max_len;
     if (len < 0) len = (int)strlen(text);
@@ -623,57 +604,46 @@ static int draw_text_worker(stb_font_cache_t* cache,
             int draw_x = x + glyph->x_offset;
             int draw_y = y + glyph->y_offset + cache->baseline;
 
-            /* Setup destination rectangle */
-            generic_rect_t dst_rect = {draw_x, draw_y, glyph->width, glyph->height};
-
             /* Set color if specified and renderer supports it */
             if (format && (format->flags & STB_FONT_FORMAT_COLOR_SET) && 
-                renderer->ops.set_texture_color_mod && glyph->texture) {
-                renderer->ops.set_texture_color_mod(renderer, glyph->texture,
+                cache->ops->set_texture_color_mod && glyph->texture) {
+                cache->ops->set_texture_color_mod(ops_ctx, glyph->texture,
                                                    format->r, format->g, format->b);
             }
 
             /* Render the glyph */
-            if (renderer->ops.render_copy && glyph->texture) {
-                renderer->ops.render_copy(renderer, glyph->texture, NULL, &dst_rect);
+            if (cache->ops->render_copy && glyph->texture) {
+                cache->ops->render_copy(ops_ctx, glyph->texture, draw_x, draw_y, glyph->width, glyph->height);
             }
             
             /* Draw underline */
             if (format && (format->format & STB_FONT_FORMAT_UNDERLINE)) {
-                generic_rect_t line_rect = {
-                    x, 
+                if (cache->ops->set_render_draw_color && cache->ops->render_fill_rect) {
+                    cache->ops->set_render_draw_color(ops_ctx, 
+                                                      format->r, format->g, format->b, format->a);
+                    cache->ops->render_fill_rect(ops_ctx, x, 
                     (int)(y + cache->underline_position),
                     glyph->width + (int)cache->underline_thickness,
-                    (int)cache->underline_thickness
-                };
-                
-                if (renderer->ops.set_render_draw_color && renderer->ops.render_fill_rect) {
-                    renderer->ops.set_render_draw_color(renderer, 
-                                                      format->r, format->g, format->b, format->a);
-                    renderer->ops.render_fill_rect(renderer, &line_rect);
+                    (int)cache->underline_thickness);
                 }
             }
             
             /* Draw strikethrough */
             if (format && (format->format & STB_FONT_FORMAT_STRIKETHROUGH)) {
-                generic_rect_t line_rect = {
-                    x,
+                if (cache->ops->set_render_draw_color && cache->ops->render_fill_rect) {
+                    cache->ops->set_render_draw_color(ops_ctx,
+                                                      format->r, format->g, format->b, format->a);
+                    cache->ops->render_fill_rect(ops_ctx, x,
                     (int)(y + cache->strikethrough_position),
                     glyph->width + (int)cache->strikethrough_thickness,
-                    (int)cache->strikethrough_thickness
-                };
-                
-                if (renderer->ops.set_render_draw_color && renderer->ops.render_fill_rect) {
-                    renderer->ops.set_render_draw_color(renderer,
-                                                      format->r, format->g, format->b, format->a);
-                    renderer->ops.render_fill_rect(renderer, &line_rect);
+                    (int)cache->strikethrough_thickness);
                 }
             }
             
             /* Reset color if we modified it */
             if (format && (format->flags & STB_FONT_FORMAT_COLOR_SET) && 
-                renderer->ops.set_texture_color_mod && glyph->texture) {
-                renderer->ops.set_texture_color_mod(renderer, glyph->texture, 255, 255, 255);
+                cache->ops->set_texture_color_mod && glyph->texture) {
+                cache->ops->set_texture_color_mod(ops_ctx, glyph->texture, 255, 255, 255);
             }
             
             x += glyph->advance;
@@ -708,10 +678,7 @@ static void* render_to_texture_generic(stb_font_cache_t* cache,
                                       int max_len,
                                       int* width_out,
                                       int* height_out) {
-    generic_cache_data_t* gen_data = (generic_cache_data_t*)cache->user_data;
-    if (!gen_data || !gen_data->renderer) return NULL;
-    
-    texture_renderer_t* renderer = gen_data->renderer;
+    void* ops_ctx = cache->ops_ctx;
     
     /* Get text size */
     int width, height;
@@ -731,11 +698,11 @@ static void* render_to_texture_generic(stb_font_cache_t* cache,
     void* target = NULL;
     void* old_target = NULL;
     
-    if (renderer->ops.create_texture && renderer->ops.set_render_target && renderer->ops.get_render_target) {
-        target = renderer->ops.create_texture(renderer, width, height, 0); /* Format TBD */
+    if (cache->ops->create_texture && cache->ops->set_render_target && cache->ops->get_render_target) {
+        target = cache->ops->create_texture(ops_ctx, width, height, 0); /* Format TBD */
         if (target) {
-            old_target = renderer->ops.get_render_target(renderer);
-            renderer->ops.set_render_target(renderer, target);
+            old_target = cache->ops->get_render_target(ops_ctx);
+            cache->ops->set_render_target(ops_ctx, target);
         }
     }
     
@@ -746,25 +713,22 @@ static void* render_to_texture_generic(stb_font_cache_t* cache,
     }
     
     /* Clear the texture */
-    if (renderer->ops.set_render_draw_color && renderer->ops.render_clear) {
-        renderer->ops.set_render_draw_color(renderer, 255, 255, 255, 0);
-        renderer->ops.render_clear(renderer);
-    } else if (renderer->ops.set_render_draw_blend_mode && renderer->ops.render_fill_rect) {
-        generic_rect_t clear_rect = {0, 0, width, height};
-        renderer->ops.set_render_draw_blend_mode(renderer, 0); /* NONE */
-        renderer->ops.set_render_draw_color(renderer, 255, 255, 255, 0);
-        renderer->ops.render_fill_rect(renderer, &clear_rect);
-        renderer->ops.set_render_draw_blend_mode(renderer, 1); /* BLEND */
+    if (cache->ops->set_render_draw_color && cache->ops->render_clear) {
+        cache->ops->set_render_draw_color(ops_ctx, 255, 255, 255, 0);
+        cache->ops->render_clear(ops_ctx);
+    } else if (cache->ops->set_render_draw_blend_mode && cache->ops->render_fill_rect) {
+        cache->ops->set_render_draw_blend_mode(ops_ctx, 0); /* NONE */
+        cache->ops->set_render_draw_color(ops_ctx, 255, 255, 255, 0);
+        cache->ops->render_fill_rect(ops_ctx, 0, 0, width, height);
+        cache->ops->set_render_draw_blend_mode(ops_ctx, 1); /* BLEND */
     }
     
     /* Draw text */
-    gen_data->is_rendering_to_texture = 1;
     draw_text_worker(cache, 0, 0, text, max_len, format, 1);
-    gen_data->is_rendering_to_texture = 0;
     
     /* Restore previous render target */
-    if (old_target && renderer->ops.set_render_target) {
-        renderer->ops.set_render_target(renderer, old_target);
+    if (old_target && cache->ops->set_render_target) {
+        cache->ops->set_render_target(ops_ctx, old_target);
     }
     
     if (width_out) *width_out = width;
@@ -790,269 +754,22 @@ void* stb_font_render_formatted_to_texture(stb_font_cache_t* cache,
     return render_to_texture_generic(cache, text, format, max_len, width_out, height_out);
 }
 
-void stb_font_render_to_object(stb_font_cache_t* cache, 
-                              generic_prerendered_text_t* text_out, 
+void* stb_font_render_to_object(stb_font_cache_t* cache, 
                               const char* text, 
-                              int max_len) {
-    if (!text_out) return;
+                              int max_len,
+                             int* width_out, int* height_out) {
     
-    text_out->texture = render_to_texture_generic(cache, text, NULL, max_len, 
-                                                &text_out->width, &text_out->height);
-    text_out->renderer = ((generic_cache_data_t*)cache->user_data)->renderer;
+    return render_to_texture_generic(cache, text, NULL, max_len, width_out, height_out);
 }
-
-void stb_font_render_formatted_to_object(stb_font_cache_t* cache, 
-                                        generic_prerendered_text_t* text_out, 
+void* stb_font_render_formatted_to_object(stb_font_cache_t* cache, 
                                         const char* text, 
                                         const stb_font_text_format_t* format, 
-                                        int max_len) {
-    if (!text_out) return;
+                                        int max_len, 
+                                        int* width_out, int* height_out) {
     
-    text_out->texture = render_to_texture_generic(cache, text, format, max_len, 
-                                                &text_out->width, &text_out->height);
-    text_out->renderer = ((generic_cache_data_t*)cache->user_data)->renderer;
+    return render_to_texture_generic(cache, text, format, max_len, width_out, height_out);
 }
 
-int stb_font_draw_prerendered(generic_prerendered_text_t* text, int x, int y) {
-    if (!text || !text->texture || !text->renderer) return x;
-    
-    texture_renderer_t* renderer = text->renderer;
-    
-    if (renderer->ops.render_copy) {
-        generic_rect_t rect = {x, y, text->width, text->height};
-        renderer->ops.render_copy(renderer, text->texture, NULL, &rect);
-    }
-    
-    return x + text->width;
-}
-
-void stb_font_free_prerendered(generic_prerendered_text_t* text) {
-    if (!text) return;
-    
-    if (text->texture && text->renderer && text->renderer->ops.destroy_texture) {
-        text->renderer->ops.destroy_texture(text->renderer, text->texture);
-        text->texture = NULL;
-    }
-}
-
-#endif /* STB_FONT_TEXTURE_RENDERER_ENABLED */
-
-/*=============================================================================
- * SDL-Specific Functions (Adapter)
- *===========================================================================*/
-
-#ifdef STB_FONT_SDL_ENABLED
-#include <SDL2/SDL.h>
-
-/* SDL-specific renderer implementation */
-typedef struct {
-    SDL_Renderer* sdl_renderer;
-} sdl_renderer_data_t;
-
-/* SDL adapter functions */
-static void* sdl_create_texture_from_surface(texture_renderer_t* renderer, void* surface) {
-    sdl_renderer_data_t* data = (sdl_renderer_data_t*)renderer->user_data;
-    SDL_Surface* sdlsurf = (SDL_Surface*)surface;
-    return SDL_CreateTextureFromSurface(data->sdl_renderer, sdlsurf);
-}
-
-static void* sdl_create_texture(texture_renderer_t* renderer, int width, int height, int format) {
-    (void)format; /* Format parameter is currently unused */
-    sdl_renderer_data_t* data = (sdl_renderer_data_t*)renderer->user_data;
-    Uint32 sdl_format = SDL_PIXELFORMAT_RGBA8888;
-    return SDL_CreateTexture(data->sdl_renderer, sdl_format, SDL_TEXTUREACCESS_TARGET, width, height);
-}
-
-static void sdl_destroy_texture(texture_renderer_t* renderer, void* texture) {
-    (void)renderer; /* Parameter unused but required for interface */
-    SDL_DestroyTexture((SDL_Texture*)texture);
-}
-
-static void sdl_set_texture_blend_mode(texture_renderer_t* renderer, void* texture, int blend_mode) {
-    (void)renderer; /* Parameter unused but required for interface */
-    SDL_SetTextureBlendMode((SDL_Texture*)texture, 
-                           blend_mode ? SDL_BLENDMODE_BLEND : SDL_BLENDMODE_NONE);
-}
-
-static void sdl_set_texture_color_mod(texture_renderer_t* renderer, void* texture, uint8_t r, uint8_t g, uint8_t b) {
-    (void)renderer; /* Parameter unused but required for interface */
-    SDL_SetTextureColorMod((SDL_Texture*)texture, r, g, b);
-}
-
-static void* sdl_create_surface_from_rgba(texture_renderer_t* renderer, unsigned char* rgba, int width, int height, int pitch) {
-    (void)renderer; /* Parameter unused but required for interface */
-    return SDL_CreateRGBSurfaceFrom(rgba, width, height, 32, pitch,
-                                   0x000000FF, 0x0000FF00, 0x00FF0000, 0xFF000000);
-}
-
-static void sdl_free_surface(texture_renderer_t* renderer, void* surface) {
-    (void)renderer; /* Parameter unused but required for interface */
-    SDL_FreeSurface((SDL_Surface*)surface);
-}
-
-static void sdl_render_copy(texture_renderer_t* renderer, void* texture, const void* src_rect, const void* dst_rect) {
-    sdl_renderer_data_t* data = (sdl_renderer_data_t*)renderer->user_data;
-    const SDL_Rect* srcrect = (const SDL_Rect*)src_rect;
-    const SDL_Rect* dstrect = (const SDL_Rect*)dst_rect;
-    SDL_RenderCopy(data->sdl_renderer, (SDL_Texture*)texture, srcrect, dstrect);
-}
-
-static void sdl_set_render_target(texture_renderer_t* renderer, void* target) {
-    sdl_renderer_data_t* data = (sdl_renderer_data_t*)renderer->user_data;
-    SDL_SetRenderTarget(data->sdl_renderer, (SDL_Texture*)target);
-}
-
-static void* sdl_get_render_target(texture_renderer_t* renderer) {
-    sdl_renderer_data_t* data = (sdl_renderer_data_t*)renderer->user_data;
-    return SDL_GetRenderTarget(data->sdl_renderer);
-}
-
-static void sdl_set_render_draw_color(texture_renderer_t* renderer, uint8_t r, uint8_t g, uint8_t b, uint8_t a) {
-    sdl_renderer_data_t* data = (sdl_renderer_data_t*)renderer->user_data;
-    SDL_SetRenderDrawColor(data->sdl_renderer, r, g, b, a);
-}
-
-static void sdl_set_render_draw_blend_mode(texture_renderer_t* renderer, int blend_mode) {
-    sdl_renderer_data_t* data = (sdl_renderer_data_t*)renderer->user_data;
-    SDL_SetRenderDrawBlendMode(data->sdl_renderer, 
-                               blend_mode ? SDL_BLENDMODE_BLEND : SDL_BLENDMODE_NONE);
-}
-
-static void sdl_render_fill_rect(texture_renderer_t* renderer, const void* rect) {
-    sdl_renderer_data_t* data = (sdl_renderer_data_t*)renderer->user_data;
-    SDL_RenderFillRect(data->sdl_renderer, (const SDL_Rect*)rect);
-}
-
-static void sdl_render_clear(texture_renderer_t* renderer) {
-    sdl_renderer_data_t* data = (sdl_renderer_data_t*)renderer->user_data;
-    SDL_RenderClear(data->sdl_renderer);
-}
-
-static int sdl_get_error(texture_renderer_t* renderer, char* buffer, int buffer_size) {
-    (void)renderer; /* Parameter unused but required for interface */
-    const char* err = SDL_GetError();
-    strncpy(buffer, err, buffer_size - 1);
-    buffer[buffer_size - 1] = '\0';
-    return (int)strlen(buffer);
-}
-
-/* Create SDL texture renderer */
-static texture_renderer_t* stb_font_create_sdl_renderer(SDL_Renderer* sdl_renderer) {
-    texture_renderer_t* renderer = (texture_renderer_t*)malloc(sizeof(texture_renderer_t));
-    sdl_renderer_data_t* data = (sdl_renderer_data_t*)malloc(sizeof(sdl_renderer_data_t));
-    
-    if (!renderer || !data) {
-        free(renderer);
-        free(data);
-        return NULL;
-    }
-    
-    data->sdl_renderer = sdl_renderer;
-    
-    renderer->ops.create_texture_from_surface = sdl_create_texture_from_surface;
-    renderer->ops.create_texture = sdl_create_texture;
-    renderer->ops.destroy_texture = sdl_destroy_texture;
-    renderer->ops.set_texture_blend_mode = sdl_set_texture_blend_mode;
-    renderer->ops.set_texture_color_mod = sdl_set_texture_color_mod;
-    renderer->ops.create_surface_from_rgba = sdl_create_surface_from_rgba;
-    renderer->ops.free_surface = sdl_free_surface;
-    renderer->ops.render_copy = sdl_render_copy;
-    renderer->ops.set_render_target = sdl_set_render_target;
-    renderer->ops.get_render_target = sdl_get_render_target;
-    renderer->ops.set_render_draw_color = sdl_set_render_draw_color;
-    renderer->ops.set_render_draw_blend_mode = sdl_set_render_draw_blend_mode;
-    renderer->ops.render_fill_rect = sdl_render_fill_rect;
-    renderer->ops.render_clear = sdl_render_clear;
-    renderer->ops.get_error = sdl_get_error;
-    renderer->user_data = data;
-    
-    return renderer;
-}
-
-/* Convenience function to maintain backward compatibility */
-void stb_font_sdl_bind_renderer(stb_font_cache_t* cache, void* renderer) {
-    texture_renderer_t* tex_renderer = stb_font_create_sdl_renderer((SDL_Renderer*)renderer);
-    stb_font_bind_texture_renderer(cache, tex_renderer);
-}
-
-/* SDL-specific wrapper functions using the generic interface */
-void* stb_font_sdl_render_to_texture(stb_font_cache_t* cache, 
-                                     const char* text, 
-                                     int max_len, 
-                                     int* width_out, 
-                                     int* height_out) {
-    return stb_font_render_to_texture(cache, text, max_len, width_out, height_out);
-}
-
-void* stb_font_sdl_render_formatted_to_texture(stb_font_cache_t* cache, 
-                                              const char* text, 
-                                              const stb_font_text_format_t* format, 
-                                              int max_len, 
-                                              int* width_out, 
-                                              int* height_out) {
-    return stb_font_render_formatted_to_texture(cache, text, format, max_len, width_out, height_out);
-}
-
-void stb_font_sdl_render_to_object(stb_font_cache_t* cache, 
-                                   stb_prerendered_text_t* text_out, 
-                                   const char* text, 
-                                   int max_len) {
-    if (!text_out) return;
-    
-    generic_prerendered_text_t gen_text;
-    stb_font_render_to_object(cache, &gen_text, text, max_len);
-    
-    text_out->texture = gen_text.texture;
-    text_out->width = gen_text.width;
-    text_out->height = gen_text.height;
-    text_out->renderer = cache->user_data; /* Points to generic_cache_data_t */
-}
-
-void stb_font_sdl_render_formatted_to_object(stb_font_cache_t* cache, 
-                                            stb_prerendered_text_t* text_out, 
-                                            const char* text, 
-                                            const stb_font_text_format_t* format, 
-                                            int max_len) {
-    if (!text_out) return;
-    
-    generic_prerendered_text_t gen_text;
-    stb_font_render_formatted_to_object(cache, &gen_text, text, format, max_len);
-    
-    text_out->texture = gen_text.texture;
-    text_out->width = gen_text.width;
-    text_out->height = gen_text.height;
-    text_out->renderer = cache->user_data; /* Points to generic_cache_data_t */
-}
-
-int stb_font_sdl_draw_prerendered(stb_prerendered_text_t* text, int x, int y) {
-    if (!text || !text->texture) return x;
-    
-    /* Convert to generic format */
-    generic_cache_data_t* gen_data = (generic_cache_data_t*)text->renderer;
-    if (!gen_data || !gen_data->renderer) return x;
-    
-    generic_prerendered_text_t gen_text;
-    gen_text.texture = text->texture;
-    gen_text.renderer = gen_data->renderer;
-    gen_text.width = text->width;
-    gen_text.height = text->height;
-    
-    return stb_font_draw_prerendered(&gen_text, x, y);
-}
-
-void stb_font_sdl_free_prerendered(stb_prerendered_text_t* text) {
-    if (!text) return;
-    
-    if (text->texture) {
-        /* Get the renderer from cache data */
-        generic_cache_data_t* gen_data = (generic_cache_data_t*)text->renderer;
-        if (gen_data && gen_data->renderer && gen_data->renderer->ops.destroy_texture) {
-            gen_data->renderer->ops.destroy_texture(gen_data->renderer, text->texture);
-        }
-        text->texture = NULL;
-    }
-}
-#endif /* STB_FONT_SDL_ENABLED */
 
 /*=============================================================================
  * Utility Functions

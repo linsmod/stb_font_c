@@ -42,7 +42,7 @@ static int read_file(const char* filename, stb_font_memory_t* mem) {
     printf("Loaded font file: %s (%zu bytes)\n", filename, size);
     return 0;
 }
-
+extern texture_renderer_ops_t* stb_font_create_renderer_funcs(SDL_Renderer* sdl_renderer);
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -79,8 +79,9 @@ int main(int argc, char** argv) {
     
     printf("SDL Renderer created successfully\n");
     
+    const texture_renderer_ops_t* renderer_funcs = stb_font_create_renderer_funcs(renderer);
     /* Create font cache */
-    stb_font_cache_t* cache = stb_font_cache_create();
+    stb_font_cache_t* cache = stb_font_cache_create(renderer_funcs,renderer);
     if (!cache) {
         printf("Failed to create font cache\n");
         SDL_DestroyRenderer(renderer);
@@ -109,9 +110,6 @@ int main(int argc, char** argv) {
         /* The memory is now managed by the cache, no need to free manually */
     }
     
-    /* Bind SDL renderer */
-    stb_font_sdl_bind_renderer(cache, renderer);
-    
     /* Test strings */
     const char* test_strings[] = {
         "Hello, World!",
@@ -128,10 +126,6 @@ int main(int argc, char** argv) {
     int current_test = 0;
     Uint32 last_time = SDL_GetTicks();
     Uint32 frame_count = 0;
-    
-    /* Prerendered text variables (must be declared outside loop) */
-    static stb_prerendered_text_t prerendered = {0};
-    static int prerendered_created = 0;
     
     while (running) {
         SDL_Event event;
@@ -226,30 +220,11 @@ int main(int argc, char** argv) {
         yellow_combined.format = STB_FONT_FORMAT_BOLD | STB_FONT_FORMAT_UNDERLINE;
         stb_font_draw_text_formatted(cache, 20, y, "Yellow Bold + Underline", &yellow_combined, -1);
         
-        /* Prerendered text example */
-        y += (int)(cache->scale * cache->row_size) * 2 + 20;
-        
-        if (!prerendered_created) {
-            stb_font_text_format_t fmt = stb_font_format_color(255, 200, 100, 255);
-            stb_font_sdl_render_formatted_to_object(cache, &prerendered,
-                                                  "This text is prerendered", &fmt, -1);
-            prerendered_created = 1;
-        }
-        
-        stb_font_draw_text(cache, 20, y, "Prerendered text below:", -1);
-        y += (int)(cache->scale * cache->row_size);
-        stb_font_sdl_draw_prerendered(&prerendered, 20, y);
-        
         /* Present */
         SDL_RenderPresent(renderer);
         
         /* Cap FPS */
         SDL_Delay(16);
-    }
-    
-    /* Cleanup */
-    if (prerendered_created) {
-        stb_font_sdl_free_prerendered(&prerendered);
     }
     
     stb_font_cache_destroy(cache);

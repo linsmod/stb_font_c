@@ -78,6 +78,7 @@ static int load_font_from_file(const char* filename, stb_font_memory_t* mem) {
     return 0;
 }
 
+extern texture_renderer_ops_t* stb_font_create_renderer_funcs(SDL_Renderer* sdl_renderer);
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -113,9 +114,10 @@ int main(int argc, char** argv) {
         SDL_Quit();
         return 1;
     }
-    
+
+    const texture_renderer_ops_t* renderer_funcs = stb_font_create_renderer_funcs(renderer);
     /* Create font cache */
-    stb_font_cache_t* cache = stb_font_cache_create();
+    stb_font_cache_t* cache = stb_font_cache_create(renderer_funcs, renderer);
     if (!cache) {
         fprintf(stderr, "Failed to create font cache\n");
         SDL_DestroyRenderer(renderer);
@@ -196,9 +198,6 @@ int main(int argc, char** argv) {
     }
     
     printf("\n=== Font Loading Complete ===\n");
-    
-    /* Bind renderer */
-    stb_font_sdl_bind_renderer(cache, renderer);
     
     /* Get font metrics */
     printf("\nFont Metrics:\n");
