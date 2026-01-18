@@ -42,7 +42,7 @@ static int read_file(const char* filename, stb_font_memory_t* mem) {
     printf("Loaded font file: %s (%zu bytes)\n", filename, size);
     return 0;
 }
-extern texture_renderer_ops_t* stb_font_create_renderer_funcs(SDL_Renderer* sdl_renderer);
+extern texture_renderer_ops_t* stb_font_create_renderer_funcs();
 int main(int argc, char** argv) {
     (void)argc;
     (void)argv;
@@ -79,7 +79,7 @@ int main(int argc, char** argv) {
     
     printf("SDL Renderer created successfully\n");
     
-    const texture_renderer_ops_t* renderer_funcs = stb_font_create_renderer_funcs(renderer);
+    const texture_renderer_ops_t* renderer_funcs = stb_font_create_renderer_funcs();
     /* Create font cache */
     stb_font_cache_t* cache = stb_font_cache_create(renderer_funcs,renderer);
     if (!cache) {

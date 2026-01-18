@@ -95,7 +95,7 @@ static int sdl_get_error(void* renderer, char* buffer, int buffer_size) {
 }
 
 /* Create SDL texture renderer */
-texture_renderer_ops_t* stb_font_create_renderer_funcs(SDL_Renderer* sdl_renderer) {
+texture_renderer_ops_t* stb_font_create_renderer_funcs() {
     texture_renderer_ops_t* ops = (texture_renderer_ops_t*)malloc(sizeof(texture_renderer_ops_t));
     ops->create_texture_from_surface = sdl_create_texture_from_surface;
     ops->create_texture = sdl_create_texture;
