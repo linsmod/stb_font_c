@@ -19,8 +19,8 @@ ifeq ($(SDL_LIBS),)
     SDL_LIBS = $(shell pkg-config --libs sdl2 2>/dev/null || pkg-config --libs sdl3 2>/dev/null || echo "")
 endif
 
-# Add SDL support flag
-CFLAGS += -DSTB_FONT_SDL_ENABLED
+# Add SDL and generic texture renderer support flags
+CFLAGS += -DSTB_FONT_SDL_ENABLED -DSTB_FONT_TEXTURE_RENDERER_ENABLED
 
 # Check if SDL is available
 ifeq ($(SDL_LIBS),)

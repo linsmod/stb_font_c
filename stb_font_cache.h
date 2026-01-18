@@ -297,7 +297,144 @@ int stb_font_draw_text_formatted(stb_font_cache_t* cache,
                                 int max_len);
 
 /*=============================================================================
- * SDL-Specific Functions
+ * Generic Texture-Based Renderer Functions
+ *===========================================================================*/
+
+#ifdef STB_FONT_TEXTURE_RENDERER_ENABLED
+
+/* Forward declarations for the generic texture renderer interface */
+typedef struct texture_renderer texture_renderer_t;
+
+/* Generic texture operations that any renderer must implement */
+typedef struct {
+    /* Texture management */
+    void* (*create_texture_from_surface)(texture_renderer_t* renderer, void* surface);
+    void* (*create_texture)(texture_renderer_t* renderer, int width, int height, int format);
+    void (*destroy_texture)(texture_renderer_t* renderer, void* texture);
+    void (*set_texture_blend_mode)(texture_renderer_t* renderer, void* texture, int blend_mode);
+    void (*set_texture_color_mod)(texture_renderer_t* renderer, void* texture, uint8_t r, uint8_t g, uint8_t b);
+    
+    /* Surface management (optional - can be NULL if not supported) */
+    void* (*create_surface_from_rgba)(texture_renderer_t* renderer, unsigned char* rgba, int width, int height, int pitch);
+    void (*free_surface)(texture_renderer_t* renderer, void* surface);
+    
+    /* Rendering operations */
+    void (*render_copy)(texture_renderer_t* renderer, void* texture, const void* src_rect, const void* dst_rect);
+    void (*set_render_target)(texture_renderer_t* renderer, void* target);
+    void* (*get_render_target)(texture_renderer_t* renderer);
+    void (*set_render_draw_color)(texture_renderer_t* renderer, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
+    void (*set_render_draw_blend_mode)(texture_renderer_t* renderer, int blend_mode);
+    void (*render_fill_rect)(texture_renderer_t* renderer, const void* rect);
+    void (*render_clear)(texture_renderer_t* renderer);
+    
+    /* Utility */
+    int (*get_error)(texture_renderer_t* renderer, char* buffer, int buffer_size);
+} texture_renderer_ops_t;
+
+/* Main texture renderer structure */
+struct texture_renderer {
+    texture_renderer_ops_t ops;
+    void* user_data;  /* Renderer-specific data (e.g., SDL_Renderer) */
+};
+
+/* Generic rectangle structure */
+typedef struct {
+    int x, y, w, h;
+} generic_rect_t;
+
+/**
+ * @brief Bind a generic texture renderer
+ * @param cache Font cache
+ * @param renderer Texture renderer implementing the texture_renderer_ops_t interface
+ */
+void stb_font_bind_texture_renderer(stb_font_cache_t* cache, texture_renderer_t* renderer);
+
+/**
+ * @brief Render text to a texture
+ * @param cache Font cache
+ * @param text UTF-8 string to render
+ * @param max_len Maximum length in bytes (use -1 for null-terminated)
+ * @param width_out Output width (can be NULL)
+ * @param height_out Output height (can be NULL)
+ * @return Platform-specific texture (void*), caller must free
+ */
+void* stb_font_render_to_texture(stb_font_cache_t* cache, 
+                                 const char* text, 
+                                 int max_len, 
+                                 int* width_out, 
+                                 int* height_out);
+
+/**
+ * @brief Render formatted text to a texture
+ * @param cache Font cache
+ * @param text UTF-8 string to render
+ * @param format Text format
+ * @param max_len Maximum length in bytes (use -1 for null-terminated)
+ * @param width_out Output width (can be NULL)
+ * @param height_out Output height (can be NULL)
+ * @return Platform-specific texture (void*), caller must free
+ */
+void* stb_font_render_formatted_to_texture(stb_font_cache_t* cache, 
+                                          const char* text, 
+                                          const stb_font_text_format_t* format, 
+                                          int max_len, 
+                                          int* width_out, 
+                                          int* height_out);
+
+/**
+ * @brief Pre-rendered text object for generic renderer
+ */
+typedef struct {
+    void* texture;
+    texture_renderer_t* renderer;
+    int width, height;
+} generic_prerendered_text_t;
+
+/**
+ * @brief Render text to a prerendered text object
+ * @param cache Font cache
+ * @param text_out Prerendered text object to populate
+ * @param text UTF-8 string to render
+ * @param max_len Maximum length in bytes (use -1 for null-terminated)
+ */
+void stb_font_render_to_object(stb_font_cache_t* cache, 
+                              generic_prerendered_text_t* text_out, 
+                              const char* text, 
+                              int max_len);
+
+/**
+ * @brief Render formatted text to a prerendered text object
+ * @param cache Font cache
+ * @param text_out Prerendered text object to populate
+ * @param text UTF-8 string to render
+ * @param format Text format
+ * @param max_len Maximum length in bytes (use -1 for null-terminated)
+ */
+void stb_font_render_formatted_to_object(stb_font_cache_t* cache, 
+                                        generic_prerendered_text_t* text_out, 
+                                        const char* text, 
+                                        const stb_font_text_format_t* format, 
+                                        int max_len);
+
+/**
+ * @brief Draw a prerendered text object
+ * @param text Prerendered text object
+ * @param x X position
+ * @param y Y position
+ * @return X position after drawing
+ */
+int stb_font_draw_prerendered(generic_prerendered_text_t* text, int x, int y);
+
+/**
+ * @brief Free texture in prerendered text object
+ * @param text Prerendered text object
+ */
+void stb_font_free_prerendered(generic_prerendered_text_t* text);
+
+#endif /* STB_FONT_TEXTURE_RENDERER_ENABLED */
+
+/*=============================================================================
+ * SDL-Specific Functions (Convenience Wrappers)
  *===========================================================================*/
 
 #ifdef STB_FONT_SDL_ENABLED
@@ -307,6 +444,9 @@ struct SDL_Renderer;
  * @brief Bind an SDL renderer for rendering
  * @param cache Font cache
  * @param renderer SDL renderer (must be cast from SDL_Renderer*)
+ * 
+ * This is a convenience function that creates a generic texture renderer
+ * adapter for SDL and binds it to the font cache.
  */
 void stb_font_sdl_bind_renderer(stb_font_cache_t* cache, void* renderer);
 
