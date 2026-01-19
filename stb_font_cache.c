@@ -131,8 +131,34 @@ void stb_font_cache_destroy(stb_font_cache_t* cache) {
 }
 
 void stb_font_cache_set_face_size(stb_font_cache_t* cache, int face_size) {
-    if (cache) {
+    if (!cache || face_size <= 0) return;
+    
+    if (cache->face_size != face_size) {
         cache->face_size = face_size;
+        
+        /* 重新计算scale和相关指标 */
+        cache_internal_t* internal = (cache_internal_t*)cache->internal;
+        font_entry_t* font = internal->fonts;
+        if (font) {
+            /* 重新计算scale */
+            cache->scale = stbtt_ScaleForPixelHeight(&font->info, cache->face_size);
+            
+            /* 重新计算基线和其他指标 */
+            cache->baseline = (int)(cache->ascent * cache->scale);
+            
+            cache->strikethrough_thickness = cache->face_size / 20.0f;
+            if (cache->strikethrough_thickness < 1.0f) cache->strikethrough_thickness = 1.0f;
+            cache->strikethrough_position = cache->baseline * 0.75f - cache->strikethrough_thickness / 2.0f;
+            cache->underline_thickness = cache->strikethrough_thickness;
+            cache->underline_position = cache->baseline + cache->underline_thickness;
+            
+            /* 重新计算制表符宽度 */
+            int w, h;
+            stb_font_get_text_size(cache, "                                                                                                                                ", 
+                                  cache->tab_width_in_spaces, &w, &h);
+            cache->tab_width = w;
+            if (cache->tab_width < 1) cache->tab_width = 1;
+        }
     }
 }
 
@@ -411,8 +437,12 @@ void stb_font_get_formatted_text_size(stb_font_cache_t* cache,
  *===========================================================================*/
 
 /* Key generation */
-static uint64_t glyph_key(uint32_t codepoint, uint8_t format, uint16_t font_idx) {
-    return ((uint64_t)codepoint) | ((uint64_t)format << 32) | ((uint64_t)font_idx << 40);
+static uint64_t glyph_key(uint32_t codepoint, uint8_t format, 
+                         uint16_t font_idx, int face_size) {
+    return ((uint64_t)codepoint) | 
+           ((uint64_t)format << 24) | 
+           ((uint64_t)font_idx << 32) | 
+           ((uint64_t)face_size << 48);
 }
 
 static uint32_t glyph_cache_hash(uint64_t key) {
@@ -462,7 +492,7 @@ static stb_glyph_t* get_or_create_glyph(stb_font_cache_t* cache,
     if (glyph_idx == 0) return NULL;
     
     /* Check cache */
-    uint64_t key = glyph_key(codepoint, format, 0);
+    uint64_t key = glyph_key(codepoint, format, 0,cache->face_size);
     uint32_t hash = glyph_cache_hash(key);
     glyph_cache_entry_t* entry = internal->glyph_cache[hash];
     
@@ -549,7 +579,7 @@ static stb_glyph_t* get_or_create_glyph(stb_font_cache_t* cache,
     return &entry->glyph;
 }
 
-static int draw_text_worker(stb_font_cache_t* cache, 
+static int draw_text_internal(stb_font_cache_t* cache, 
                           int x, int y, 
                           const char* text, 
                           int max_len,
@@ -660,7 +690,7 @@ int stb_font_draw_text(stb_font_cache_t* cache,
                       int x, int y, 
                       const char* text, 
                       int max_len) {
-    return draw_text_worker(cache, x, y, text, max_len, NULL, 1);
+    return draw_text_internal(cache, x, y, text, max_len, NULL, 1);
 }
 
 int stb_font_draw_text_formatted(stb_font_cache_t* cache, 
@@ -668,7 +698,7 @@ int stb_font_draw_text_formatted(stb_font_cache_t* cache,
                                 const char* text, 
                                 const stb_font_text_format_t* format, 
                                 int max_len) {
-    return draw_text_worker(cache, x, y, text, max_len, format, 1);
+    return draw_text_internal(cache, x, y, text, max_len, format, 1);
 }
 
 /* Generic texture-based rendering functions */
@@ -724,7 +754,7 @@ static void* render_to_texture_generic(stb_font_cache_t* cache,
     }
     
     /* Draw text */
-    draw_text_worker(cache, 0, 0, text, max_len, format, 1);
+    draw_text_internal(cache, 0, 0, text, max_len, format, 1);
     
     /* Restore previous render target */
     if (old_target && cache->ops->set_render_target) {
