@@ -1,7 +1,7 @@
 # Simple Makefile for stb_font_c
 
 CC = gcc
-CFLAGS = -Wall -Wextra -O2 -std=c11 -I.
+CFLAGS = -Wall -Wextra -O0 -g -std=c11 -I.
 
 # Try SDL2 first (default)
 SDL_CFLAGS = $(shell sdl2-config --cflags 2>/dev/null || echo "")

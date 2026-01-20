@@ -6,7 +6,7 @@
         {
             "label": "build",
             "type": "shell",
-            "command": "make clean && make",
+            "command": "make clean && make multi_language_example",
             "problemMatcher": [],
             "group": {
                 "kind": "test",
